@@ -6,7 +6,7 @@ class Base
 
   class << self
     def model_class
-      model_name = self.name.gsub('Base', '')
+      model_name = self.name.gsub('ActionData', '')
       model_name.constantize
     end
 

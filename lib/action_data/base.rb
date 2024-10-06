@@ -1,4 +1,4 @@
-class Base
+class ActionData::Base
   @joinable_models = {}
   @displayable_fields = {}
   @groupable_fields = {}
@@ -65,45 +65,64 @@ class Base
       "#{table_name}.#{field}"
     end
 
-    def generate_query(query_params, aggregate: [])
+    def generate_query(tree_structure)
       query = nil
-      last_model_class = nil
       group_by_fields = []
 
-      query_params.each do |(action_data_class, fields)|
+      def traverse_tree(node, parent_query = nil, parent_class = nil, group_by_fields)
+        action_data_class, node_data = node.first
+
+        unless action_data_class.is_a?(Class) && action_data_class < ActionData::Base
+          raise "Expected action_data_class to be a subclass of ActionData::Base, but got #{action_data_class.inspect}"
+        end
+
         model_class = action_data_class.model_class
+        fields = node_data[:fields] || []
+        aggregates = node_data[:aggregates] || []
 
         fields_with_table = fields.map { |field| alias_field(model_class.table_name, field) }
 
-        if query.nil?
+        if parent_query.nil?
           query = model_class.select(fields_with_table)
         else
-          join_columns = last_model_class.join_columns_for(action_data_class.name)
-          query = query.joins("INNER JOIN #{model_class.table_name} ON #{last_model_class.model_class.table_name}.#{join_columns.first} = #{model_class.table_name}.id")
+          join_columns = parent_class.join_columns_for(action_data_class.name)
+          query = parent_query.joins("INNER JOIN #{model_class.table_name} ON #{parent_class.model_class.table_name}.#{join_columns.first} = #{model_class.table_name}.id")
           query = query.select(fields_with_table)
         end
 
         group_by_fields.concat(fields.map { |field| raw_field(model_class.table_name, field) })
 
-        last_model_class = action_data_class
-      end
+        # Process siblings
+        if node_data[:siblings]
+          node_data[:siblings].each do |sibling_class, sibling_data|
+            query = traverse_tree({ sibling_class => sibling_data }, query, action_data_class, group_by_fields)
+          end
+        end
 
-      group_by_fields.uniq!
+        # Process children
+        if node_data[:children]
+          node_data[:children].each do |child_class, child_data|
+            query = traverse_tree({ child_class => child_data }, query, action_data_class, group_by_fields)
+          end
+        end
 
-      group_by_fields.each do |field|
-        query = query.group(field)
-      end
-
-      aggregate.each do |(action_data_class, aggregations)|
-        model_class = action_data_class.model_class
-
-        aggregations.each do |field, operation|
+        # Add aggregates
+        aggregates.each do |field, operation|
           aggregate_field = raw_field(model_class.table_name, field)
           unless action_data_class.can_aggregate?(field, operation)
             raise "Cannot aggregate #{operation} on #{field} for model #{action_data_class.name}"
           end
           query = query.select("#{operation.upcase}(#{aggregate_field}) AS \"#{model_class.table_name}-#{operation}-#{field}\"")
         end
+
+        query
+      end
+
+      query = traverse_tree(tree_structure, nil, nil, group_by_fields)
+
+      group_by_fields.uniq!
+      group_by_fields.each do |field|
+        query = query.group(field)
       end
 
       ActiveRecord::Base.connection.select_all(query.to_sql).to_a

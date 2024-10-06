@@ -1,4 +1,3 @@
-require "action_data/version"
 require "active_record"
 
 module ActionData
